@@ -1,0 +1,18 @@
+# Grafana datasource for InfluxDB 2.x (INFLUXDB_VERSION=2).
+# The dashboards use InfluxQL; InfluxDB 2.x serves every bucket as an InfluxQL
+# database of the same name, authenticated with an API token in a header.
+apiVersion: 1
+datasources:
+  - name: Garmin-InfluxDB
+    uid: garmin_influxdb
+    type: influxdb
+    access: proxy
+    url: http://influxdb:8086
+    isDefault: true
+    editable: true
+    jsonData:
+      dbName: GarminStats  # the bucket name (INFLUXDB_DATABASE)
+      httpMode: GET
+      httpHeaderName1: Authorization
+    secureJsonData:
+      httpHeaderValue1: Token your_read_only_influxdb2_token

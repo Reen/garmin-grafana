@@ -1,0 +1,84 @@
+name: InfluxDB 2 image
+
+on:
+  push:
+    branches:
+      - influxdb2
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: garmin-fetch-data
+
+jobs:
+  test:
+    name: Test InfluxDB 2 backend
+    runs-on: ubuntu-latest
+    services:
+      influxdb:
+        image: influxdb:2
+        ports:
+          - 8086:8086
+        env:
+          DOCKER_INFLUXDB_INIT_MODE: setup
+          DOCKER_INFLUXDB_INIT_USERNAME: admin
+          DOCKER_INFLUXDB_INIT_PASSWORD: adminpassword
+          DOCKER_INFLUXDB_INIT_ORG: test
+          DOCKER_INFLUXDB_INIT_BUCKET: GarminStats
+          DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: test-token
+        options: >-
+          --health-cmd "influx ping"
+          --health-interval 2s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Run tests
+        env:
+          INFLUXDB2_TEST_URL: http://localhost:8086
+          INFLUXDB2_TEST_TOKEN: test-token
+          INFLUXDB2_TEST_ORG: test
+          INFLUXDB2_TEST_BUCKET: GarminStats
+        run: uv run --locked python -m unittest discover -s tests -v
+
+  build_and_push:
+    name: Build multi-arch image and push to GHCR
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU for Multi-Architecture Support
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=influxdb2
+            type=sha,prefix=influxdb2-
+
+      - name: Build Multi-Arch Image (linux/amd64, linux/arm64) and Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
