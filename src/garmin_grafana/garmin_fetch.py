@@ -33,15 +33,16 @@ if env_override:
     logging.warning("System ENV variables are overridden with override-default-vars.env")
 
 # %%
-INFLUXDB_VERSION = os.getenv("INFLUXDB_VERSION",'1') # Your influxdb database version (accepted values are '1' or '3')
-assert INFLUXDB_VERSION in ['1','3'], "Only InfluxDB version 1 or 3 is allowed - please ensure to set this value to either 1 or 3"
+INFLUXDB_VERSION = os.getenv("INFLUXDB_VERSION",'1') # Your influxdb database version (accepted values are '1', '2' or '3')
+assert INFLUXDB_VERSION in ['1','2','3'], "Only InfluxDB version 1, 2 or 3 is allowed - please ensure to set this value to either 1, 2 or 3"
 INFLUXDB_HOST = os.getenv("INFLUXDB_HOST",'localhost') # Required
 INFLUXDB_PORT = int(os.getenv("INFLUXDB_PORT", 8086)) # Required
 INFLUXDB_USERNAME = os.getenv("INFLUXDB_USERNAME", 'influxdb_username') # Required
 INFLUXDB_PASSWORD = os.getenv("INFLUXDB_PASSWORD", 'influxdb_access_password') # Required
 INFLUXDB_DATABASE = os.getenv("INFLUXDB_DATABASE", 'GarminStats') # Required
 INFLUXDB_V3_ACCESS_TOKEN = os.getenv("INFLUXDB_V3_ACCESS_TOKEN",'') # InfluxDB V3 Access token, required only for InfluxDB V3
-INFLUXDB_ORG = os.getenv("INFLUXDB_ORG", 'default') # required only for InfluxDB V3 
+INFLUXDB_V2_ACCESS_TOKEN = os.getenv("INFLUXDB_V2_ACCESS_TOKEN",'') # InfluxDB V2 API token with read/write access to the bucket named INFLUXDB_DATABASE, required only for InfluxDB V2
+INFLUXDB_ORG = os.getenv("INFLUXDB_ORG", 'default') # required only for InfluxDB V2 and V3 
 TOKEN_DIR = os.getenv("TOKEN_DIR", "~/.garminconnect") # optional
 GARMINCONNECT_EMAIL = (os.environ.get("GARMINCONNECT_EMAIL") or "").strip() or None # optional, asks in prompt on run if not provided
 _garmin_pw_b64 = os.getenv("GARMINCONNECT_BASE64_PASSWORD")
@@ -87,7 +88,18 @@ logging.basicConfig(
 
 # %%
 try:
-    if INFLUXDB_ENDPOINT_IS_HTTP:
+    if INFLUXDB_VERSION == '2':
+        try:
+            from influxdb2_backend import InfluxDB2Client
+        except ImportError:
+            from .influxdb2_backend import InfluxDB2Client
+        influxdbclient = InfluxDB2Client(
+            url=f"{'http' if INFLUXDB_ENDPOINT_IS_HTTP else 'https'}://{INFLUXDB_HOST}:{INFLUXDB_PORT}",
+            token=INFLUXDB_V2_ACCESS_TOKEN,
+            org=INFLUXDB_ORG,
+            bucket=INFLUXDB_DATABASE
+            )
+    elif INFLUXDB_ENDPOINT_IS_HTTP:
         if INFLUXDB_VERSION == '1':
             influxdbclient = InfluxDBClient(host=INFLUXDB_HOST, port=INFLUXDB_PORT, username=INFLUXDB_USERNAME, password=INFLUXDB_PASSWORD)
             influxdbclient.switch_database(INFLUXDB_DATABASE)
@@ -116,7 +128,7 @@ try:
     'fields': {'DemoField': 0}
      }
     # The following code block tests the connection by writing/overwriting a demo point. raises error and aborts if connection fails. 
-    if INFLUXDB_VERSION == '1':
+    if INFLUXDB_VERSION in ('1', '2'):
         influxdbclient.write_points([demo_point])
     else:
         influxdbclient.write(record=[demo_point])
@@ -200,7 +212,7 @@ def write_points_to_influxdb(points):
                     item['tags'].update({'User_ID': garmin_obj.display_name or 'Unknown'})
             # Write in chunks - Issue reported for large activities data containing >20000 points - Error 413 : payload too large
             for i in range(0, len(points), write_chunk_size):
-                if INFLUXDB_VERSION == '1':
+                if INFLUXDB_VERSION in ('1', '2'):
                     influxdbclient.write_points(points[i:i + write_chunk_size])
                 else:
                     influxdbclient.write(record=points[i:i + write_chunk_size])
@@ -757,7 +769,7 @@ def purge_existing_strength_exercise_sets(activity_id):
     previous series first, InfluxDB keeps the stale and corrected rows in
     parallel because the tags no longer match.
     """
-    if INFLUXDB_VERSION != '1':
+    if INFLUXDB_VERSION not in ('1', '2'):
         logging.warning(
             f"InfluxDB version {INFLUXDB_VERSION} does not support purging StrengthExerciseSet series for activity {activity_id}. "
             "Applying the default refresh behavior; edited exercises may produce duplicated rows."
@@ -1777,6 +1789,10 @@ if __name__ == "__main__":
         try:
             if INFLUXDB_VERSION == "1":
                 last_influxdb_sync_time_UTC = pytz.utc.localize(datetime.strptime(list(influxdbclient.query(f"SELECT * FROM HeartRateIntraday ORDER BY time DESC LIMIT 1").get_points())[0]['time'],"%Y-%m-%dT%H:%M:%SZ"))
+            elif INFLUXDB_VERSION == "2":
+                last_influxdb_sync_time_UTC = influxdbclient.last_point_time("HeartRateIntraday")
+                if last_influxdb_sync_time_UTC is None:
+                    raise LookupError("No HeartRateIntraday points found in InfluxDB bucket")
             else:
                 last_influxdb_sync_time_UTC = pytz.utc.localize(influxdbclient.query(query="SELECT * FROM HeartRateIntraday ORDER BY time DESC LIMIT 1", language="influxql").to_pylist()[0]['time'])
         except Exception as err:

@@ -40,18 +40,31 @@ timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 zip_filename = f"/tmp/GarminStats_Export_{timestamp_str}_{time_label}.zip"
 
 
-INFLUXDB_VERSION = os.getenv("INFLUXDB_VERSION",'1') # Your influxdb database version (accepted values are '1' or '3')
-assert INFLUXDB_VERSION in ['1','3'], "Only InfluxDB version 1 or 3 is allowed - please ensure to set this value to either 1 or 3"
+INFLUXDB_VERSION = os.getenv("INFLUXDB_VERSION",'1') # Your influxdb database version (accepted values are '1', '2' or '3')
+assert INFLUXDB_VERSION in ['1','2','3'], "Only InfluxDB version 1, 2 or 3 is allowed - please ensure to set this value to either 1, 2 or 3"
 INFLUXDB_HOST = os.getenv("INFLUXDB_HOST", "your.influxdb.hostname")
 INFLUXDB_PORT = int(os.getenv("INFLUXDB_PORT", 8086))
 INFLUXDB_USERNAME = os.getenv("INFLUXDB_USERNAME", "influxdb_username")
 INFLUXDB_PASSWORD = os.getenv("INFLUXDB_PASSWORD", "influxdb_access_password")
 INFLUXDB_DATABASE = os.getenv("INFLUXDB_DATABASE", "GarminStats")
 INFLUXDB_V3_ACCESS_TOKEN = os.getenv("INFLUXDB_V3_ACCESS_TOKEN",'') # InfluxDB V3 Access token, required only for InfluxDB V3
+INFLUXDB_V2_ACCESS_TOKEN = os.getenv("INFLUXDB_V2_ACCESS_TOKEN",'') # InfluxDB V2 API token, required only for InfluxDB V2
+INFLUXDB_ORG = os.getenv("INFLUXDB_ORG", 'default') # required only for InfluxDB V2
 INFLUXDB_ENDPOINT_IS_HTTP = False if os.getenv("INFLUXDB_ENDPOINT_IS_HTTP") in ['False','false','FALSE','f','F','no','No','NO','0'] else True # optional
 
 
-if INFLUXDB_ENDPOINT_IS_HTTP:
+if INFLUXDB_VERSION == '2':
+    try:
+        from influxdb2_backend import InfluxDB2Client
+    except ImportError:
+        from .influxdb2_backend import InfluxDB2Client
+    influxdbclient = InfluxDB2Client(
+    url=f"{'http' if INFLUXDB_ENDPOINT_IS_HTTP else 'https'}://{INFLUXDB_HOST}:{INFLUXDB_PORT}",
+    token=INFLUXDB_V2_ACCESS_TOKEN,
+    org=INFLUXDB_ORG,
+    bucket=INFLUXDB_DATABASE
+    )
+elif INFLUXDB_ENDPOINT_IS_HTTP:
     if INFLUXDB_VERSION == '1':
         influxdbclient = InfluxDBClient(host=INFLUXDB_HOST, port=INFLUXDB_PORT, username=INFLUXDB_USERNAME, password=INFLUXDB_PASSWORD)
         influxdbclient.switch_database(INFLUXDB_DATABASE)
@@ -78,10 +91,11 @@ excluded_measurements = {"%", "DemoPoint", "DeviceSync"}
 # --- Fetch all measurements ---
 measurements_query = "SHOW MEASUREMENTS"
 if INFLUXDB_VERSION == "1":
-    measurements_result = influxdbclient.query(measurements_query)
+    measurements = [m["name"] for m in influxdbclient.query(measurements_query).get_points()]
+elif INFLUXDB_VERSION == "2":
+    measurements = influxdbclient.measurements(start_time, end_time)
 else:
-    measurements_result = influxdbclient.query(measurements_query, language="influxql")
-measurements = [m["name"] for m in measurements_result.get_points()]
+    measurements = [m["name"] for m in influxdbclient.query(measurements_query, language="influxql").get_points()]
 
 print(f"Found {len(measurements)} measurements. Skipping: {excluded_measurements}")
 
@@ -98,17 +112,19 @@ with zipfile.ZipFile(zip_filename, "w", zipfile.ZIP_DEFLATED) as zipf:
 
         try:
             
-            if INFLUXDB_VERSION == "1":
-                result = influxdbclient.query(query)
+            if INFLUXDB_VERSION == "2":
+                df = influxdbclient.query_measurement_frame(measurement, start_time, end_time)
             else:
-                result = influxdbclient.query(query, language="influxql")
-            points = list(result.get_points())
+                if INFLUXDB_VERSION == "1":
+                    result = influxdbclient.query(query)
+                else:
+                    result = influxdbclient.query(query, language="influxql")
+                df = pd.DataFrame(list(result.get_points()))
 
-            if not points:
+            if df.empty:
                 print(" -- ⚠️ No data within given period.")
                 continue
 
-            df = pd.DataFrame(points)
             df.insert(0, "measurement", measurement)
 
             # Write to an in-memory CSV and add to ZIP
